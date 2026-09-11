@@ -59,8 +59,6 @@ function checkedURL(v:unknown,kind:string){const s=textValue(v,500,false);if(!s)
 const diagnosticCodes=new Set(['28P01','28000','3D000','3F000','42P01','42703','42501','53300','57P01','08001','08006','08P01','ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','ETIMEDOUT','ENETUNREACH','EHOSTUNREACH','CONNECT_TIMEOUT','CONNECTION_CLOSED','CONNECTION_DESTROYED','ERR_INVALID_URL','ERR_INVALID_ARG_TYPE','DEPTH_ZERO_SELF_SIGNED_CERT','SELF_SIGNED_CERT_IN_CHAIN','UNABLE_TO_VERIFY_LEAF_SIGNATURE','UNABLE_TO_GET_ISSUER_CERT_LOCALLY','CERT_HAS_EXPIRED','ERR_TLS_CERT_ALTNAME_INVALID']);
 for(const code of ['XX000','53200','53400','57P03','57014','42601','SASL_SIGNATURE_MISMATCH','UNDEFINED_VALUE','NOT_TAGGED_CALL','UNSAFE_TRANSACTION','MAX_PARAMETERS_EXCEEDED','ERR_SSL_WRONG_VERSION_NUMBER','ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR','ERR_TLS_HANDSHAKE_TIMEOUT','CERT_NOT_YET_VALID'])diagnosticCodes.add(code);
 function diagnosticCode(error:unknown){
- let current=error;
- for(let depth=0;depth<3&&current&&typeof current==='object';depth++){
  const pending:unknown[]=[error],seen=new Set<object>();
  let fallback='UNCLASSIFIED_ERROR';
  for(let inspected=0;pending.length&&inspected<8;inspected++){
@@ -80,13 +78,11 @@ function diagnosticCode(error:unknown){
   if(/max client connections reached|maxclientsinsessionmode/i.test(message))return 'POOLER_CONNECTION_LIMIT';
   const code='code' in current?current.code:undefined;
   if(typeof code==='string'&&diagnosticCodes.has(code))return code;
-  current='cause' in current?current.cause:undefined;
   if(current instanceof TypeError)fallback='TYPE_ERROR';
   if(current instanceof RangeError)fallback='RANGE_ERROR';
   if('cause' in current)pending.push(current.cause);
   if(current instanceof AggregateError)pending.push(...current.errors.slice(0,4));
  }
- return error instanceof DiscordFailure?'DISCORD_FAILURE':error instanceof Failure?'APP_FAILURE':'UNCLASSIFIED_ERROR';
  return error instanceof DiscordFailure?'DISCORD_FAILURE':error instanceof Failure?'APP_FAILURE':fallback;
 }
 function responseError(e:unknown,stage='post_request'){
