@@ -54,21 +54,44 @@ function visible(a:Access,i:Item){
 function textValue(v:unknown,max:number,required=true){if(typeof v!=='string'||v.length>max||(required&&!v.trim()))fail(400,'تحقّق من الحقول المطلوبة وطول النص.');return (v as string).trim()}
 function audit(a:Access,action:string,target:string){return stmt('INSERT INTO audit(id,actor,action,target,created_at) VALUES(?,?,?,?,?)',crypto.randomUUID(),a.me.name,action,target,new Date().toISOString())}
 function checkedURL(v:unknown,kind:string){const s=textValue(v,500,false);if(!s)return '';try{const u=new URL(s);if(u.protocol!=='https:')fail(400,'استخدم رابط HTTPS آمنًا.');if(kind==='discord'&&!['discord.gg','discord.com'].includes(u.hostname))fail(400,'أدخل رابط Discord صحيحًا.');if(kind==='connect'&&u.hostname!=='cfx.re')fail(400,'أدخل رابط الانضمام من cfx.re.');return u.href}catch(e){if(e instanceof Failure)throw e;return fail(400,'الرابط غير صالح.')}}
-function responseError(e:unknown){const conflict=!!e&&typeof e==='object'&&'code' in e&&e.code==='23505';return Response.json({error:conflict?'تعارض في العضوية أو ربط الرتبة. حدّث الصفحة وحاول مجددًا.':(e instanceof Failure||e instanceof DiscordFailure)?e.message:'تعذّر إتمام العملية. لم يتم تأكيد الحفظ، حاول مرة أخرى.'},{status:conflict?409:(e instanceof Failure||e instanceof DiscordFailure)?e.status:500,headers})}
-export async function GET(request:Request){try{
+// Only fixed diagnostic codes may reach logs. Never log an Error object, message,
+// stack, connection URL, request, identity, query, or environment values.
+const diagnosticCodes=new Set(['28P01','28000','3D000','3F000','42P01','42703','42501','53300','57P01','08001','08006','08P01','ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','ETIMEDOUT','ENETUNREACH','EHOSTUNREACH','CONNECT_TIMEOUT','CONNECTION_CLOSED','CONNECTION_DESTROYED','ERR_INVALID_URL','ERR_INVALID_ARG_TYPE','DEPTH_ZERO_SELF_SIGNED_CERT','SELF_SIGNED_CERT_IN_CHAIN','UNABLE_TO_VERIFY_LEAF_SIGNATURE','UNABLE_TO_GET_ISSUER_CERT_LOCALLY','CERT_HAS_EXPIRED','ERR_TLS_CERT_ALTNAME_INVALID']);
+function diagnosticCode(error:unknown){
+ let current=error;
+ for(let depth=0;depth<3&&current&&typeof current==='object';depth++){
+  const code='code' in current?current.code:undefined;
+  if(typeof code==='string'&&diagnosticCodes.has(code))return code;
+  current='cause' in current?current.cause:undefined;
+ }
+ return error instanceof DiscordFailure?'DISCORD_FAILURE':error instanceof Failure?'APP_FAILURE':'UNCLASSIFIED_ERROR';
+}
+function responseError(e:unknown,stage='post_request'){
+ const conflict=!!e&&typeof e==='object'&&'code' in e&&e.code==='23505';
+ const status=conflict?409:(e instanceof Failure||e instanceof DiscordFailure)?e.status:500;
+ if(status>=500)console.error('[elite-admin]',JSON.stringify({stage,code:diagnosticCode(e)}));
+ return Response.json({error:conflict?'تعارض في العضوية أو ربط الرتبة. حدّث الصفحة وحاول مجددًا.':(e instanceof Failure||e instanceof DiscordFailure)?e.message:'تعذّر إتمام العملية. لم يتم تأكيد الحفظ، حاول مرة أخرى.'},{status,headers});
+}
+export async function GET(request:Request){let stage='identity';try{
  const user=await identity();
+ stage='settings_query';
  const configured=await first<Ownership>(settingsSQL);
  if(!configured){
+  stage='bootstrap_discord';
   if(user.discordId!==discordConfig().ownerId)fail(403,'بانتظار تأسيس اللوحة بواسطة المالك.');
   await getDiscordMember(user.discordId);
   return Response.json({setup:true},{headers});
  }
+ stage='member_query';
  const existing=await first<Member>(memberSQL+' WHERE user_id=?',user.userId);
  if(!existing){
+  stage='role_check';
   await effectiveRole(user,await getDiscordMember(user.discordId),configured);
   return Response.json({join:true,error:'رتبتك مؤهلة. اضغط تفعيل العضوية للانضمام إلى اللوحة.'},{status:403,headers});
  }
+ stage='access_check';
  const a=await access(user);
+ stage='read_data';
  const query=new URL(request.url).searchParams;
  if(query.has('comments')){
   const i=await first<Item>(itemSQL+' WHERE id=?',query.get('comments'));
@@ -85,7 +108,7 @@ export async function GET(request:Request){try{
  const referenced=new Set([a.me.id,...items.flatMap(i=>[i.createdBy,i.assignee].filter(Boolean))]);
  const visibleMembers=members.filter(m=>directory||referenced.has(m.id)||(assignment&&m.active));
  return Response.json({me:a.me,permissions:a.permissions,items,settings,roles:roles.map(r=>a.can('roles.manage')?r:{id:r.id,name:r.name,permissions:'[]'}),members:visibleMembers.map(m=>a.me.roleId==='owner'?m:directory?{id:m.id,name:m.name,roleId:m.roleId,active:m.active}:{id:m.id,name:m.name,active:m.active}),audit:a.can('audit.view')?await all('SELECT id,actor,action,target,created_at AS createdAt FROM audit ORDER BY created_at DESC LIMIT 100'):[]},{headers});
- }catch(e){return responseError(e)}}
+ }catch(e){return responseError(e,stage)}}
 export async function POST(request:Request){try{
  if(!isSameOrigin(request))fail(403,'الطلب من مصدر غير مسموح.');
  if(!request.headers.get('content-type')?.includes('application/json'))fail(415,'نوع الطلب غير مدعوم.');
